@@ -794,7 +794,34 @@ static int stm32x_get_device_id(struct flash_bank *bank, uint32_t *device_id)
 	struct target *target = bank->target;
 	struct stm32x_property_addr addr;
 
-	int retval = stm32x_get_property_addr(target, &addr);
+	if (!target_was_examined(target)) {
+		LOG_ERROR("Target not examined yet");
+		return ERROR_FAIL;
+	}
+
+	switch (cortex_m->core_info->partno) {
+	case CORTEX_M0_PARTNO: /* STM32F0x devices */
+		device_id_register = 0x40015800;
+		break;
+	case CORTEX_M3_PARTNO: /* STM32F1x devices */
+		device_id_register = 0xE0042000;
+		break;
+	case CORTEX_M4_PARTNO: /* STM32F3x devices */
+		device_id_register = 0xE0042000;
+		break;
+	case CORTEX_M23_PARTNO: /* GD32E23x devices */
+		device_id_register = 0x40015800;
+		break;
+	case CORTEX_M33_PARTNO: /* GD32E50x devices */
+		device_id_register = 0xE0044000;
+		break;
+	default:
+		LOG_ERROR("Cannot identify target as a stm32x");
+		return ERROR_FAIL;
+	}
+
+	/* read stm32 device id register */
+	int retval = target_read_u32(target, device_id_register, device_id);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -806,7 +833,33 @@ static int stm32x_get_flash_size(struct flash_bank *bank, uint16_t *flash_size_i
 	struct target *target = bank->target;
 	struct stm32x_property_addr addr;
 
-	int retval = stm32x_get_property_addr(target, &addr);
+	if (!target_was_examined(target)) {
+		LOG_ERROR("Target not examined yet");
+		return ERROR_FAIL;
+	}
+
+	switch (cortex_m->core_info->partno) {
+	case CORTEX_M0_PARTNO: /* STM32F0x devices */
+		flash_size_reg = 0x1FFFF7CC;
+		break;
+	case CORTEX_M3_PARTNO: /* STM32F1x devices */
+		flash_size_reg = 0x1FFFF7E0;
+		break;
+	case CORTEX_M4_PARTNO: /* STM32F3x devices */
+		flash_size_reg = 0x1FFFF7CC;
+		break;
+	case CORTEX_M23_PARTNO: /* GD32E23x devices */
+		flash_size_reg = 0x1FFFF7E0;
+		break;
+	case CORTEX_M33_PARTNO: /* GD32E50x devices */
+		flash_size_reg = 0x1FFFF7E0;
+		break;
+	default:
+		LOG_ERROR("Cannot identify target as a stm32x");
+		return ERROR_FAIL;
+	}
+
+	int retval = target_read_u16(target, flash_size_reg, flash_size_in_kb);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -851,15 +904,25 @@ static int stm32x_probe(struct flash_bank *bank)
 		stm32x_info->default_rdp = 0xAA;
 		stm32x_info->can_load_options = true;
 		break;
-	case 0x444: /* stm32f03x */
+	case 0x444: /* stm32f03x, gd32e50x */
 	case 0x445: /* stm32f04x */
-		page_size = 1024;
-		stm32x_info->ppage_size = 4;
-		max_flash_size_in_kb = 32;
-		stm32x_info->user_data_offset = 16;
-		stm32x_info->option_offset = 6;
-		stm32x_info->default_rdp = 0xAA;
-		stm32x_info->can_load_options = true;
+		/* explicitly for our gd32e503 case */
+		if (device_id == 0x444 && rev_id == 0x2003) {
+			page_size = 8192; /* flash page size is 8Kbyte */
+			stm32x_info->ppage_size = 1; /* 1 page per protection block, except for pages 31-63 */
+			max_flash_size_in_kb = 512;
+			stm32x_info->user_data_offset = 10; /* same as in GD32F103 */
+			stm32x_info->option_offset = 0;
+		} else {
+			/* stm32f03x, stm32f04x */
+			page_size = 1024;
+			stm32x_info->ppage_size = 4;
+			max_flash_size_in_kb = 32;
+			stm32x_info->user_data_offset = 16;
+			stm32x_info->option_offset = 6;
+			stm32x_info->default_rdp = 0xAA;
+			stm32x_info->can_load_options = true;
+		}
 		break;
 	case 0x448: /* stm32f07x */
 		page_size = 2048;
@@ -1284,8 +1347,13 @@ static int get_stm32x_info(struct flash_bank *bank, struct command_invocation *c
 		break;
 
 	case 0x444:
-		device_str = "STM32F03x";
-		rev_str = get_stm32f0_revision(rev_id);
+		/* GD32E50x */
+		if (rev_id == 0x2003) {
+			device_str = "GD32E50x";
+		} else {
+			device_str = "STM32F03x";
+			rev_str = get_stm32f0_revision(rev_id);
+		}
 		break;
 
 	case 0x440:
